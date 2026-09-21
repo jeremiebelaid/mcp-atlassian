@@ -522,6 +522,11 @@ class UserTokenMiddleware:
         # transport boundary so the downstream handler cannot fall back to the
         # operator's global credentials. When a provider is attached, defer to
         # FastMCP so it can return the RFC 9728 OAuth discovery challenge.
+        # Cookie session (JIRA_COOKIE / ATLASSIAN_EXTERNAL_AUTH_ENABLE) is
+        # already the user identity — official Jira DC JSESSIONID auth.
+        cookie_session = bool((os.getenv("JIRA_COOKIE") or "").strip()) or is_env_truthy(
+            "ATLASSIAN_EXTERNAL_AUTH_ENABLE"
+        )
         if (
             not ignore_header_auth
             and self.mcp_server_ref
@@ -529,6 +534,7 @@ class UserTokenMiddleware:
             and not scope_copy["state"].get("user_atlassian_auth_type")
             and self.mcp_server_ref.auth is None
             and not is_env_truthy("ALLOW_GLOBAL_CRED_FALLBACK")
+            and not cookie_session
         ):
             logger.warning(
                 "UserTokenMiddleware: rejecting unauthenticated MCP request "

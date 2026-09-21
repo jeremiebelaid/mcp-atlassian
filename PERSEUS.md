@@ -16,3 +16,7 @@ JIRA_COOKIE='JSESSIONID=…; AWSELBAuthSessionCookie-0=…'
 ```
 
 `JIRA_COOKIE` is not comma-split. A PAT still wins if `JIRA_PERSONAL_TOKEN` is set.
+
+Streamable HTTP no longer 401s when a cookie session (or
+`ATLASSIAN_EXTERNAL_AUTH_ENABLE`) is configured: that *is* the user
+identity, so `ALLOW_GLOBAL_CRED_FALLBACK` is not required.

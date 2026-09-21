@@ -258,6 +258,12 @@ class JiraConfig:
         api_token = os.getenv("JIRA_API_TOKEN")
         personal_token = os.getenv("JIRA_PERSONAL_TOKEN")
         client_cert_env = os.getenv("JIRA_CLIENT_CERT")
+        session_cookie = os.getenv("JIRA_COOKIE")
+        # Parsed early so a Cookie header can select external auth before PAT is required.
+        custom_headers = get_custom_headers("JIRA_CUSTOM_HEADERS")
+        if session_cookie and session_cookie.strip():
+            custom_headers["Cookie"] = session_cookie.strip()
+        has_session_cookie = any(key.lower() == "cookie" for key in custom_headers)
 
         # Check for OAuth configuration (pass service info for DC detection)
         oauth_config = get_oauth_config_from_env(service_url=url, service_type="jira")
@@ -266,9 +272,14 @@ class JiraConfig:
         # Use the shared utility function directly
         is_cloud = is_atlassian_cloud_url(url) if url else False
 
-        # External auth passthrough mode — no credentials needed
+        # External auth passthrough — no credentials. Official Jira DC cookie
+        # session (JSESSIONID, plus any ALB SSO cookie) is enough.
+        # https://developer.atlassian.com/server/jira/platform/cookie-based-authentication/
         if (
-            is_env_truthy("ATLASSIAN_EXTERNAL_AUTH_ENABLE")
+            (
+                is_env_truthy("ATLASSIAN_EXTERNAL_AUTH_ENABLE")
+                or has_session_cookie
+            )
             and not username
             and not api_token
             and not personal_token
@@ -340,8 +351,6 @@ class JiraConfig:
         # Proxy settings
         proxy_settings = get_proxy_settings_from_env("JIRA")
 
-        # Custom headers - service-specific only
-        custom_headers = get_custom_headers("JIRA_CUSTOM_HEADERS")
         passthrough_headers = get_header_names("JIRA_PASSTHROUGH_HEADERS")
 
         # Markup translation setting

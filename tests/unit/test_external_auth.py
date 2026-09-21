@@ -42,6 +42,37 @@ class TestJiraConfigExternalAuth:
             assert config.personal_token is None
             assert config.oauth_config is None
 
+    def test_from_env_cookie_header_selects_external_auth(self):
+        """A Cookie header is official Jira DC session auth; no PAT required."""
+        with patch.dict(
+            os.environ,
+            {
+                "JIRA_URL": "https://jira.example.com",
+                "JIRA_CUSTOM_HEADERS": "Cookie=JSESSIONID=abc",
+            },
+            clear=True,
+        ):
+            config = JiraConfig.from_env()
+            assert config.auth_type == "external"
+            assert config.custom_headers["Cookie"] == "JSESSIONID=abc"
+
+    def test_from_env_jira_cookie_env_selects_external_auth(self):
+        """JIRA_COOKIE is not comma-split (ALB cookies are long)."""
+        with patch.dict(
+            os.environ,
+            {
+                "JIRA_URL": "https://jira.example.com",
+                "JIRA_COOKIE": "JSESSIONID=abc; AWSELBAuthSessionCookie-0=x=y",
+            },
+            clear=True,
+        ):
+            config = JiraConfig.from_env()
+            assert config.auth_type == "external"
+            assert (
+                config.custom_headers["Cookie"]
+                == "JSESSIONID=abc; AWSELBAuthSessionCookie-0=x=y"
+            )
+
     def test_from_env_without_url_creates_external_auth_type(self):
         """from_env() allows missing JIRA_URL when ATLASSIAN_EXTERNAL_AUTH_ENABLE=true."""
         with patch.dict(

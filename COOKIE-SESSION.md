@@ -1,4 +1,4 @@
-# Perseus fork
+# sooperset/mcp-atlassian fork
 
 Cookie-session auth for Jira Data Center behind an SSO gate (Cognito ALB).
 

@@ -224,6 +224,59 @@ For multi-tenant applications where each user connects to their own Atlassian cl
    - `Authorization: Bearer <user_oauth_token>`
    - `X-Atlassian-Cloud-Id: <user_cloud_id>`
 
+### Named Instances
+
+One server can front several Jira or Confluence instances, each with its own
+session, when the instances sit behind an SSO gate that only accepts a browser
+session cookie (for example an AWS ALB with Cognito in front of Data Center).
+
+Declare them in a JSON file and point `ATLASSIAN_INSTANCES_FILE` at it:
+
+```json
+{
+  "jira": {
+    "main": {
+      "url": "https://jira.example.com",
+      "cookie_file": "/session/jira-cookie",
+      "projects_filter": "PROJ"
+    }
+  },
+  "confluence": {
+    "main": {
+      "url": "https://confluence.example.com",
+      "cookie_file": "/session/confluence-cookie"
+    },
+    "labs": {
+      "url": "https://labs.example.com/wiki",
+      "cookie_file": "/session/labs-cookie",
+      "spaces_filter": "LAB"
+    }
+  }
+}
+```
+
+A request then picks one per service with a header:
+
+- `X-Atlassian-Jira-Instance: main`
+- `X-Atlassian-Confluence-Instance: labs`
+
+How it behaves:
+
+- **The credential stays on the server.** It is the `Cookie` header value in
+  `cookie_file`, read again for every request, so a session renewed by whatever
+  writes that file is used by the next call with no restart.
+- **The caller only chooses.** URLs come from the file, not from the request,
+  so an unknown name is refused with `401` and nothing is fetched.
+- **Tools follow the header.** A request naming only a Confluence instance is
+  offered the Confluence tools; a Jira tool called on it fails.
+- **The instance's session is the identity.** A request that names an instance
+  needs no `Authorization` header. Anyone who can reach the server can
+  therefore act as that session: keep the server on a trusted network or behind
+  a gateway that authenticates callers.
+
+Optional per-instance keys: `projects_filter` (Jira), `spaces_filter`
+(Confluence), `ssl_verify`.
+
 ### Python Example
 
 ```python

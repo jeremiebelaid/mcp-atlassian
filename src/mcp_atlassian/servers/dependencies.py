@@ -26,6 +26,11 @@ from mcp_atlassian.utils.env import (
     is_env_ssl_verify,
     is_env_truthy,
 )
+from mcp_atlassian.utils.instances import (
+    CONFLUENCE_INSTANCE_HEADER,
+    JIRA_INSTANCE_HEADER,
+    get_instance,
+)
 from mcp_atlassian.utils.oauth import OAuthConfig
 from mcp_atlassian.utils.proxy import get_proxy_settings_from_env
 from mcp_atlassian.utils.urls import validate_url_for_ssrf
@@ -55,6 +60,7 @@ class _ServiceSpec:
     config_attr: str  # MainAppContext attribute for global config
     url_header: str  # X-Atlassian-{Service}-Url
     token_header: str  # X-Atlassian-{Service}-Personal-Token
+    instance_header: str  # X-Atlassian-{Service}-Instance
     passthrough_env_var: str  # {SERVICE}_PASSTHROUGH_HEADERS
     filter_kwargs: dict[str, Any]  # e.g. {"projects_filter": None}
     get_session: Callable[[Any], Any]  # fetcher → session
@@ -133,6 +139,11 @@ def _credential_for_cache(config: JiraConfig | ConfluenceConfig) -> str | None:
         # Username + token together identify the credential; a token reused
         # under a different username should still validate independently.
         return f"{getattr(config, 'username', '') or ''}:{config.api_token}"
+    if config.auth_type == "external":
+        # A named instance authenticates with a session cookie. Keying on it
+        # means a renewed cookie is validated afresh, and a stable one is not
+        # validated on every request.
+        return (config.custom_headers or {}).get("Cookie")
     return None
 
 
@@ -322,6 +333,7 @@ def _jira_spec() -> _ServiceSpec:
         config_attr="full_jira_config",
         url_header="X-Atlassian-Jira-Url",
         token_header="X-Atlassian-Jira-Personal-Token",  # noqa: S106
+        instance_header=JIRA_INSTANCE_HEADER,
         passthrough_env_var="JIRA_PASSTHROUGH_HEADERS",
         filter_kwargs={"projects_filter": None},
         get_session=lambda f: f.jira._session,
@@ -344,6 +356,7 @@ def _confluence_spec() -> _ServiceSpec:
         config_attr="full_confluence_config",
         url_header="X-Atlassian-Confluence-Url",
         token_header="X-Atlassian-Confluence-Personal-Token",  # noqa: S106
+        instance_header=CONFLUENCE_INSTANCE_HEADER,
         passthrough_env_var="CONFLUENCE_PASSTHROUGH_HEADERS",
         filter_kwargs={"spaces_filter": None},
         get_session=lambda f: f.confluence._session,
@@ -506,7 +519,9 @@ def _create_and_validate(
         ValueError: On validation or creation failure.
     """
     fn_name = f"get_{spec.name.lower()}_fetcher"
-    auth_desc = "header-based" if auth_branch == "header_pat" else "user"
+    auth_desc = {"header_pat": "header-based", "instance": "instance"}.get(
+        auth_branch, "user"
+    )
     try:
         request_passthrough_headers = _get_request_passthrough_headers(
             request, spec, config
@@ -560,6 +575,13 @@ def _create_and_validate(
             f"{fn_name}: Failed to create/validate {auth_desc} {spec.name}Fetcher: {e}",
             exc_info=True,
         )
+        if auth_branch == "instance":
+            # The credential is the server's own session for that instance, so
+            # the usual cause is that it expired, not a bad token from the caller.
+            raise ValueError(
+                f"The {spec.name} instance at {config.url} did not accept the "
+                f"stored session (it may have expired): {e}"
+            ) from e
         raise ValueError(f"Invalid {auth_desc} {spec.name} token or configuration: {e}")
 
 
@@ -850,6 +872,25 @@ async def _get_fetcher(ctx: Context, spec: _ServiceSpec) -> Any:
         service_headers = getattr(request.state, "atlassian_service_headers", {})
         url_header_val = service_headers.get(spec.url_header)
         token_header_val = service_headers.get(spec.token_header)
+
+        # --- Branch 0: operator-declared named instance ---
+        # The URL and the credential both come from the server's own
+        # configuration; the request only says which one it wants.
+        instance_name = service_headers.get(spec.instance_header)
+        if instance_name:
+            instance = get_instance(spec.name.lower(), instance_name)
+            logger.info(
+                f"Creating {spec.name}Fetcher for instance '{instance_name}' "
+                f"({instance.url})"
+            )
+            instance_config = spec.config_class(
+                **{
+                    **_get_header_pat_network_config(ctx, spec),
+                    **instance.config_kwargs(),
+                },
+                passthrough_headers=None,
+            )
+            return _create_and_validate(request, spec, instance_config, "instance")
 
         # --- Branch 1: header-based PAT ---
         if (

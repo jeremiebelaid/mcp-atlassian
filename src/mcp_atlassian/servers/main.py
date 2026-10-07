@@ -28,6 +28,11 @@ from mcp_atlassian.confluence.config import ConfluenceConfig
 from mcp_atlassian.jira.config import JiraConfig
 from mcp_atlassian.utils.env import is_env_truthy
 from mcp_atlassian.utils.environment import get_available_services
+from mcp_atlassian.utils.instances import (
+    INSTANCE_HEADERS,
+    InstanceError,
+    get_instance,
+)
 from mcp_atlassian.utils.io import is_read_only_mode
 from mcp_atlassian.utils.logging import mask_sensitive
 from mcp_atlassian.utils.oauth import (
@@ -278,11 +283,22 @@ class AtlassianMCP(ErrorPreservingFastMCP[MainAppContext]):
             if isinstance(request_service_headers, dict) and request_service_headers:
                 service_headers = request_service_headers
                 header_based_services = get_available_services(service_headers)
+                # A request that names an instance has that service available,
+                # whatever the environment configures.
+                for service, header in INSTANCE_HEADERS.items():
+                    if service_headers.get(header):
+                        header_based_services[service] = True
 
         jira_config = (
             app_lifespan_state.full_jira_config if app_lifespan_state else None
         )
         jira_url_header = service_headers.get("X-Atlassian-Jira-Url")
+        jira_instance_name = service_headers.get(INSTANCE_HEADERS["jira"])
+        if jira_instance_name and not jira_url_header:
+            try:
+                jira_url_header = get_instance("jira", jira_instance_name).url
+            except InstanceError:
+                jira_url_header = None
         jira_is_cloud: bool | None = None
         if jira_url_header:
             jira_is_cloud = is_atlassian_cloud_url(jira_url_header)
@@ -708,6 +724,24 @@ class UserTokenMiddleware:
             if confluence_url_str:
                 service_headers["X-Atlassian-Confluence-Url"] = confluence_url_str
 
+            # Named instances: the request only chooses among what the
+            # operator declared, so an unknown name is refused here.
+            instance_requested = False
+            for service, header in INSTANCE_HEADERS.items():
+                raw_name = headers.get(header.lower().encode("latin-1"))
+                if not raw_name:
+                    continue
+                instance_name = raw_name.decode("latin-1").strip()
+                try:
+                    get_instance(service, instance_name)
+                except InstanceError as instance_error:
+                    scope["state"]["auth_validation_error"] = (
+                        f"Unauthorized: {instance_error}"
+                    )
+                    return
+                service_headers[header] = instance_name
+                instance_requested = True
+
             scope["state"]["atlassian_service_headers"] = service_headers
             if service_headers:
                 logger.debug(
@@ -750,6 +784,11 @@ class UserTokenMiddleware:
                     logger.debug(
                         "UserTokenMiddleware: Header-based authentication detected. Setting PAT auth type."
                     )
+                elif instance_requested:
+                    # The instance's own session is the identity for this
+                    # request, as declared by the operator.
+                    scope["state"]["user_atlassian_auth_type"] = "instance"
+                    scope["state"]["user_atlassian_email"] = None
 
         except Exception as e:
             logger.error(f"Error processing authentication headers: {e}", exc_info=True)

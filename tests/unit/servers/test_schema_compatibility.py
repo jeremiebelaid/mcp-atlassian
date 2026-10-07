@@ -40,7 +40,7 @@ def all_tool_schemas() -> dict[str, dict]:
             name = tool_obj.name
             mcp_tool = tool_obj.to_mcp_tool(name=name)
             _sanitize_schema_for_compatibility(mcp_tool)
-            schemas[name] = mcp_tool.inputSchema
+            schemas[name] = mcp_tool.input_schema
         return schemas
 
     try:
@@ -179,7 +179,7 @@ class TestSanitizeSchemaForCompatibility:
             }
         )
         _sanitize_schema_for_compatibility(tool)
-        prop = tool.inputSchema["properties"]["foo"]
+        prop = tool.input_schema["properties"]["foo"]
         assert prop["type"] == "string"
         assert "anyOf" not in prop
         assert prop["default"] is None
@@ -196,7 +196,7 @@ class TestSanitizeSchemaForCompatibility:
             }
         )
         _sanitize_schema_for_compatibility(tool)
-        prop = tool.inputSchema["properties"]["bar"]
+        prop = tool.input_schema["properties"]["bar"]
         assert prop["type"] == "integer"
         assert "anyOf" not in prop
 
@@ -210,7 +210,7 @@ class TestSanitizeSchemaForCompatibility:
             }
         )
         _sanitize_schema_for_compatibility(tool)
-        prop = tool.inputSchema["properties"]["flag"]
+        prop = tool.input_schema["properties"]["flag"]
         assert prop["type"] == "boolean"
         assert "anyOf" not in prop
 
@@ -235,7 +235,7 @@ class TestSanitizeSchemaForCompatibility:
             }
         )
         _sanitize_schema_for_compatibility(tool)
-        prop = tool.inputSchema["properties"]["project_key"]
+        prop = tool.input_schema["properties"]["project_key"]
         assert prop["type"] == "string"
         assert prop["pattern"] == "^[A-Z][A-Z0-9_]+$"
         assert "anyOf" not in prop
@@ -248,7 +248,7 @@ class TestSanitizeSchemaForCompatibility:
             {"name": {"type": "string", "description": "required name"}}
         )
         _sanitize_schema_for_compatibility(tool)
-        prop = tool.inputSchema["properties"]["name"]
+        prop = tool.input_schema["properties"]["name"]
         assert prop == {"type": "string", "description": "required name"}
 
     def test_preserves_complex_anyof(self) -> None:
@@ -270,7 +270,7 @@ class TestSanitizeSchemaForCompatibility:
             }
         )
         _sanitize_schema_for_compatibility(tool)
-        prop = tool.inputSchema["properties"]["data"]
+        prop = tool.input_schema["properties"]["data"]
         # Should remain untouched since there are 2 non-null types
         assert "anyOf" in prop
 

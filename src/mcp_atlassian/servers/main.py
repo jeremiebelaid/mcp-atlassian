@@ -12,9 +12,12 @@ from urllib.parse import urlparse
 from fastmcp import FastMCP
 from fastmcp import settings as fastmcp_settings
 from fastmcp.exceptions import NotFoundError
+from fastmcp.server.dependencies import bind_request_context
 from fastmcp.server.event_store import EventStore
 from fastmcp.server.http import StarletteWithLifespan
 from fastmcp.tools import Tool as FastMCPTool
+from mcp import types as mcp_types
+from mcp.server.context import ServerRequestContext
 from mcp.types import Tool as MCPTool
 from starlette.middleware import Middleware
 from starlette.requests import Request
@@ -85,7 +88,7 @@ def _sanitize_schema_for_compatibility(tool: MCPTool) -> MCPTool:
     Returns:
         The same MCPTool instance (mutated) for chaining convenience.
     """
-    schema = tool.inputSchema
+    schema = tool.input_schema
     if not schema or not isinstance(schema, dict):
         return tool
 
@@ -226,13 +229,20 @@ class AtlassianMCP(ErrorPreservingFastMCP[MainAppContext]):
             return self._active_streamable_http_path
         return self._normalize_http_path(fastmcp_settings.streamable_http_path)
 
-    def _tool_filter_context(self) -> dict[str, Any] | None:
+    def _tool_filter_context(
+        self, request_context: Any | None = None
+    ) -> dict[str, Any] | None:
         """Gather the per-request tool-enablement context (read-only mode, enabled
         tools/toolsets, service availability) from the lifespan/request context.
 
+        FastMCP 4 hands the request context to each handler instead of exposing
+        it on the low-level server, so the handlers pass it in.
+
         Returns None when the lifespan context is unavailable.
         """
-        req_context = self._mcp_server.request_context
+        req_context = request_context
+        if req_context is None:
+            req_context = getattr(self._mcp_server, "request_context", None)
         if req_context is None or req_context.lifespan_context is None:
             return None
 
@@ -355,16 +365,18 @@ class AtlassianMCP(ErrorPreservingFastMCP[MainAppContext]):
                 return False
         return True
 
-    async def _list_tools_mcp(self) -> list[MCPTool]:
+    async def _list_tools_mcp(
+        self, request_context: Any | None = None
+    ) -> list[MCPTool]:
         # Filter tools based on enabled_tools, read_only mode, and service configuration from the lifespan context.
-        ctx = self._tool_filter_context()
+        ctx = self._tool_filter_context(request_context)
         if ctx is None:
             logger.warning(
                 "Lifespan context not available during _list_tools_mcp call."
             )
             return []
 
-        all_tools: list[FastMCPTool] = await self.list_tools()
+        all_tools: list[FastMCPTool] = list(await self.list_tools())
         logger.debug(
             f"Aggregated {len(all_tools)} tools before filtering: "
             f"{[tool.name for tool in all_tools]}"
@@ -385,14 +397,16 @@ class AtlassianMCP(ErrorPreservingFastMCP[MainAppContext]):
         )
         return filtered_tools
 
-    async def _call_tool_mcp(self, key: str, arguments: dict[str, Any]) -> Any:
+    async def _ensure_tool_callable(
+        self, key: str, request_context: Any | None = None
+    ) -> None:
         # Enforce the same enablement filter at call time as at listing time, so a
         # tool hidden from the listing (read-only mode, not in ENABLED_TOOLS, toolset
         # disabled, or deployment-incompatible) cannot be invoked directly by name.
         # Under an active filter context, denials and genuinely unknown tools raise
         # byte-identical messages here (no exists-but-disabled leak), decoupled from
         # upstream's error format (FastMCP uses a repr-quoted name).
-        ctx = self._tool_filter_context()
+        ctx = self._tool_filter_context(request_context)
         if ctx is not None:
             tool_obj = await self.get_tool(key)
             if (
@@ -401,7 +415,49 @@ class AtlassianMCP(ErrorPreservingFastMCP[MainAppContext]):
                 or not self._is_tool_supported_on_deployment(tool_obj, ctx)
             ):
                 raise NotFoundError(f"Unknown tool: {key}")
-        return await super()._call_tool_mcp(key, arguments)
+
+    async def _call_tool_mcp(
+        self,
+        key: str,
+        arguments: dict[str, Any],
+        request_context: Any | None = None,
+    ) -> Any:
+        await self._ensure_tool_callable(key, request_context)
+        return await self.call_tool(key, arguments)
+
+    # FastMCP 4 dispatches `tools/list` and `tools/call` to these two handlers.
+    # The filtering above used to hang off `_list_tools_mcp` and
+    # `_call_tool_mcp`, which FastMCP no longer calls: without these overrides
+    # every hidden tool is listed and callable again (GHSA-3r68).
+
+    async def _on_list_tools(
+        self,
+        ctx: ServerRequestContext,
+        params: mcp_types.PaginatedRequestParams | None,
+    ) -> mcp_types.ListToolsResult:
+        with bind_request_context(ctx):
+            return mcp_types.ListToolsResult(tools=await self._list_tools_mcp(ctx))
+
+    async def _on_call_tool(
+        self,
+        ctx: ServerRequestContext,
+        params: mcp_types.CallToolRequestParams,
+    ) -> Any:
+        with bind_request_context(ctx):
+            try:
+                await self._ensure_tool_callable(params.name, ctx)
+            except NotFoundError:
+                # Same shape and wording as FastMCP's answer for a tool that
+                # does not exist, so a denial does not reveal that it does.
+                return mcp_types.CallToolResult(
+                    content=[
+                        mcp_types.TextContent(
+                            type="text", text=f"Unknown tool: {params.name!r}"
+                        )
+                    ],
+                    is_error=True,
+                )
+        return await super()._on_call_tool(ctx, params)
 
     def http_app(
         self,
@@ -415,6 +471,7 @@ class AtlassianMCP(ErrorPreservingFastMCP[MainAppContext]):
         host_origin_protection: bool | Literal["auto"] | None = None,
         allowed_hosts: list[str] | None = None,
         allowed_origins: list[str] | None = None,
+        session_idle_timeout: float | None = None,
     ) -> StarletteWithLifespan:
         final_path = path
         if transport == "streamable-http":
@@ -437,6 +494,7 @@ class AtlassianMCP(ErrorPreservingFastMCP[MainAppContext]):
             host_origin_protection=host_origin_protection,
             allowed_hosts=allowed_hosts,
             allowed_origins=allowed_origins,
+            session_idle_timeout=session_idle_timeout,
         )
         return app
 

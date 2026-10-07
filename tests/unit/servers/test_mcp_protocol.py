@@ -157,9 +157,9 @@ class TestMCPProtocolIntegration:
 
         atlassian_mcp_server.get_tool = mock_get_tool
 
-        with patch.object(
-            FastMCP, "_call_tool_mcp", new_callable=AsyncMock
-        ) as mock_super:
+        # FastMCP 4 has no `_call_tool_mcp`; the executor a permitted call
+        # reaches is the public `call_tool`.
+        with patch.object(FastMCP, "call_tool", new_callable=AsyncMock) as mock_super:
             mock_super.return_value = "EXECUTED"
 
             # Write tool is read-only-excluded -> denied before reaching the executor.

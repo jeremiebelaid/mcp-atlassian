@@ -582,9 +582,9 @@ class UserTokenMiddleware:
         # FastMCP so it can return the RFC 9728 OAuth discovery challenge.
         # Cookie session (JIRA_COOKIE / ATLASSIAN_EXTERNAL_AUTH_ENABLE) is
         # already the user identity — official Jira DC JSESSIONID auth.
-        cookie_session = bool((os.getenv("JIRA_COOKIE") or "").strip()) or is_env_truthy(
-            "ATLASSIAN_EXTERNAL_AUTH_ENABLE"
-        )
+        cookie_session = bool(
+            (os.getenv("JIRA_COOKIE") or "").strip()
+        ) or is_env_truthy("ATLASSIAN_EXTERNAL_AUTH_ENABLE")
         if (
             not ignore_header_auth
             and self.mcp_server_ref
